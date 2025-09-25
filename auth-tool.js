@@ -42,8 +42,8 @@ const cca = new ConfidentialClientApplication(msalConfig);
 
 // Microsoft Graph scopes
 const graphScopes = [
-  'https://graph.microsoft.com/Notes.ReadWrite',
-  'https://graph.microsoft.com/User.Read',
+  'Notes.ReadWrite',
+  'User.Read',
 ];
 
 // Helper function to start local web server for OAuth callback
