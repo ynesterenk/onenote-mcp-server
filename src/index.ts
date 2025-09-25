@@ -2,47 +2,122 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ClientSecretCredential } from '@azure/identity';
 import { Client } from '@microsoft/microsoft-graph-client';
+import { PublicClientApplication, AuthenticationResult } from '@azure/msal-node';
 import { z } from 'zod';
+import { spawn } from 'child_process';
 
 // Create MCP server
 const mcpServer = new McpServer({
-  name: 'mcp-server-onenote',
+  name: 'mcp-server-onenote-delegated',
   version: '0.1.1',
 });
 
-// Initialize Azure credentials
-const tenantId = process.env.AZURE_TENANT_ID;
-const clientId = process.env.AZURE_CLIENT_ID;
-const clientSecret = process.env.AZURE_CLIENT_SECRET;
+// Initialize Azure app configuration
+    const tenantId = process.env.AZURE_TENANT_ID;
+    const clientId = process.env.AZURE_CLIENT_ID;
 
-if (!tenantId || !clientId || !clientSecret) {
-  throw new Error('Azure credentials must be provided via environment variables');
+if (!tenantId || !clientId) {
+  throw new Error('AZURE_TENANT_ID and AZURE_CLIENT_ID must be provided via environment variables');
 }
 
-const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+console.log('🔧 OneNote MCP Server (Delegated Auth) starting...');
+console.log('📝 This version uses delegated permissions with user sign-in');
 
-// Initialize Microsoft Graph client
+// MSAL configuration for delegated permissions
+const msalConfig = {
+  auth: {
+    clientId: clientId,
+    authority: `https://login.microsoftonline.com/${tenantId}`,
+  },
+};
+
+const pca = new PublicClientApplication(msalConfig);
+
+// Token storage
+let cachedTokenResponse: AuthenticationResult | null = null;
+
+// Microsoft Graph scopes for delegated permissions
+const graphScopes = [
+  'https://graph.microsoft.com/Notes.ReadWrite',
+  'https://graph.microsoft.com/User.Read',
+];
+
+// Authentication helper functions
+async function getAccessToken(): Promise<string> {
+  try {
+    // Try to get token silently first (from cache)
+    if (cachedTokenResponse?.account) {
+      const silentRequest = {
+        account: cachedTokenResponse.account,
+        scopes: graphScopes,
+      };
+      
+      try {
+        const silentResult = await pca.acquireTokenSilent(silentRequest);
+        console.log('🔄 Using cached authentication token');
+        return silentResult.accessToken;
+      } catch (silentError) {
+        console.log('🔄 Cached token expired, requesting new authentication...');
+      }
+    }
+
+    // If silent acquisition fails, use device code flow
+    console.log('\n🔐 USER AUTHENTICATION REQUIRED');
+    console.log('================================');
+    
+    const deviceCodeRequest = {
+      scopes: graphScopes,
+      deviceCodeCallback: (response: any) => {
+        console.log(`Please visit: ${response.verificationUri}`);
+        console.log(`Enter code: ${response.userCode}`);
+        console.log('================================');
+        console.log('⏳ Waiting for you to complete sign-in in your browser...\n');
+
+        // Try to open browser automatically
+        const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+        try {
+          spawn(opener, [response.verificationUri], { stdio: 'ignore', detached: true }).unref();
+        } catch (error) {
+          // Ignore browser opening errors - user can manually open the URL
+        }
+      },
+    };
+
+    const deviceCodeResult = await pca.acquireTokenByDeviceCode(deviceCodeRequest);
+    
+    if (!deviceCodeResult) {
+      throw new Error('Failed to acquire token via device code flow');
+    }
+    
+    cachedTokenResponse = deviceCodeResult;
+    
+    console.log('✅ Authentication successful!');
+    console.log(`👤 Signed in as: ${deviceCodeResult.account?.name || deviceCodeResult.account?.username}`);
+    console.log('🎯 OneNote MCP Server is ready!\n');
+    
+    return deviceCodeResult.accessToken;
+  } catch (error) {
+    throw new Error(`Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+// Initialize Microsoft Graph client with delegated auth
 const graphClient = Client.initWithMiddleware({
   authProvider: {
-    async getAccessToken() {
-      const tokenResponse = await credential.getToken('https://graph.microsoft.com/.default');
-      return tokenResponse?.token || '';
+    getAccessToken: async () => {
+      return await getAccessToken();
     }
   }
 });
 
 // Register notebook management tools
 mcpServer.registerTool('list_notebooks', {
-  description: 'List OneNote notebooks for a specific user',
-  inputSchema: {
-    userId: z.string().describe('User ID or email address (required for client credentials flow)'),
-  },
-}, async ({ userId }) => {
+  description: 'List all OneNote notebooks for the authenticated user',
+  inputSchema: {},
+}, async () => {
   try {
-    const apiPath = `/users/${userId}/onenote/notebooks`;
-    const response = await graphClient.api(apiPath).get();
+    const response = await graphClient.api('/me/onenote/notebooks').get();
     return {
       content: [
         {
@@ -60,12 +135,10 @@ mcpServer.registerTool('get_notebook', {
   description: 'Get details of a specific OneNote notebook',
   inputSchema: {
     id: z.string().describe('The ID of the notebook'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ id, userId }) => {
+}, async ({ id }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/notebooks/${id}` : `/me/onenote/notebooks/${id}`;
-    const response = await graphClient.api(apiPath).get();
+    const response = await graphClient.api(`/me/onenote/notebooks/${id}`).get();
     return {
       content: [
         {
@@ -80,15 +153,13 @@ mcpServer.registerTool('get_notebook', {
 });
 
 mcpServer.registerTool('create_notebook', {
-  description: 'Create a new OneNote notebook',
+  description: 'Create a new OneNote notebook for the authenticated user',
   inputSchema: {
     name: z.string().describe('The name of the new notebook'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ name, userId }) => {
+}, async ({ name }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/notebooks` : `/me/onenote/notebooks`;
-    const response = await graphClient.api(apiPath).post({
+    const response = await graphClient.api('/me/onenote/notebooks').post({
       displayName: name,
     });
     return {
@@ -109,12 +180,10 @@ mcpServer.registerTool('list_sections', {
   description: 'List sections in a OneNote notebook',
   inputSchema: {
     notebookId: z.string().describe('The ID of the notebook'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ notebookId, userId }) => {
+}, async ({ notebookId }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/notebooks/${notebookId}/sections` : `/me/onenote/notebooks/${notebookId}/sections`;
-    const response = await graphClient.api(apiPath).get();
+    const response = await graphClient.api(`/me/onenote/notebooks/${notebookId}/sections`).get();
     return {
       content: [
         {
@@ -133,12 +202,10 @@ mcpServer.registerTool('create_section', {
   inputSchema: {
     notebookId: z.string().describe('The ID of the notebook'),
     name: z.string().describe('The name of the new section'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ notebookId, name, userId }) => {
+}, async ({ notebookId, name }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/notebooks/${notebookId}/sections` : `/me/onenote/notebooks/${notebookId}/sections`;
-    const response = await graphClient.api(apiPath).post({
+    const response = await graphClient.api(`/me/onenote/notebooks/${notebookId}/sections`).post({
       displayName: name,
     });
     return {
@@ -159,12 +226,10 @@ mcpServer.registerTool('list_pages', {
   description: 'List pages in a OneNote section',
   inputSchema: {
     sectionId: z.string().describe('The ID of the section'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ sectionId, userId }) => {
+}, async ({ sectionId }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/sections/${sectionId}/pages` : `/me/onenote/sections/${sectionId}/pages`;
-    const response = await graphClient.api(apiPath).get();
+    const response = await graphClient.api(`/me/onenote/sections/${sectionId}/pages`).get();
     return {
       content: [
         {
@@ -182,12 +247,10 @@ mcpServer.registerTool('get_page', {
   description: 'Get details of a specific OneNote page',
   inputSchema: {
     id: z.string().describe('The ID of the page'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ id, userId }) => {
+}, async ({ id }) => {
   try {
-    const apiPath = userId ? `/users/${userId}/onenote/pages/${id}` : `/me/onenote/pages/${id}`;
-    const response = await graphClient.api(apiPath).get();
+    const response = await graphClient.api(`/me/onenote/pages/${id}`).get();
     return {
       content: [
         {
@@ -207,9 +270,8 @@ mcpServer.registerTool('create_page', {
     sectionId: z.string().describe('The ID of the section'),
     title: z.string().describe('The title of the new page'),
     content: z.string().optional().describe('HTML content for the page'),
-    userId: z.string().optional().describe('User ID or email address'),
   },
-}, async ({ sectionId, title, content = '', userId }) => {
+}, async ({ sectionId, title, content = '' }) => {
   try {
     const html = `
 <!DOCTYPE html>
@@ -223,8 +285,7 @@ mcpServer.registerTool('create_page', {
   </body>
 </html>`;
     
-    const apiPath = userId ? `/users/${userId}/onenote/sections/${sectionId}/pages` : `/me/onenote/sections/${sectionId}/pages`;
-    const response = await graphClient.api(apiPath)
+    const response = await graphClient.api(`/me/onenote/sections/${sectionId}/pages`)
       .header('Content-Type', 'text/html')
       .post(html);
     return {
@@ -244,12 +305,12 @@ mcpServer.registerTool('create_page', {
 async function main() {
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
-  console.log('OneNote MCP server is running...');
+  console.log('🚀 OneNote MCP Server (Delegated Auth) is running...');
 }
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error('Server error:', error);
+    console.error('❌ Server error:', error);
     process.exit(1);
   });
 }

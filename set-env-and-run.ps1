@@ -1,7 +1,8 @@
-# PowerShell script to set Azure environment variables and run the OneNote MCP Server
+# PowerShell script to set Azure environment variables and run the OneNote MCP Server (Delegated Auth)
 # Usage: .\set-env-and-run.ps1
+# NOTE: This version uses delegated authentication - no client secret required
 
-Write-Host "Setting Azure environment variables and starting server..." -ForegroundColor Green
+Write-Host "Setting Azure environment variables and starting server (Delegated Auth)..." -ForegroundColor Green
 
 # Check if secret.local file exists
 if (Test-Path "secret.local") {
@@ -18,7 +19,7 @@ if (Test-Path "secret.local") {
             switch ($key) {
                 "AZURE_TENANT_ID" { $env:AZURE_TENANT_ID = $value }
                 "AZURE_CLIENT_ID" { $env:AZURE_CLIENT_ID = $value }
-                "AZURE_CLIENT_SECRET" { $env:AZURE_CLIENT_SECRET = $value }
+                # AZURE_CLIENT_SECRET not needed for delegated authentication
             }
         }
     }
@@ -28,13 +29,13 @@ if (Test-Path "secret.local") {
     
     $env:AZURE_TENANT_ID = "<YOUR_TENANT_ID>"
     $env:AZURE_CLIENT_ID = "<YOUR_CLIENT_ID>"
-    $env:AZURE_CLIENT_SECRET = "<YOUR_CLIENT_SECRET>"
+    # AZURE_CLIENT_SECRET not needed for delegated authentication
 }
 
 Write-Host "Environment variables set successfully!" -ForegroundColor Green
 Write-Host "AZURE_TENANT_ID: $env:AZURE_TENANT_ID" -ForegroundColor Yellow
 Write-Host "AZURE_CLIENT_ID: $env:AZURE_CLIENT_ID" -ForegroundColor Yellow
-Write-Host "AZURE_CLIENT_SECRET: $env:AZURE_CLIENT_SECRET" -ForegroundColor Yellow
+Write-Host "Note: Using delegated authentication - no client secret required" -ForegroundColor Cyan
 
 Write-Host "`nBuilding and starting the server..." -ForegroundColor Cyan
 
