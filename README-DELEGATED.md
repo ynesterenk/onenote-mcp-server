@@ -18,10 +18,13 @@ This branch implements **delegated authentication** with user sign-in instead of
 ### 1. Azure App Registration Setup
 
 1. Go to Azure Portal → App Registrations → Your App
-2. **API Permissions** → Add **Delegated permissions**:
+2. **Authentication** → Add platform → Web:
+   - **Redirect URI**: `http://localhost:3001/auth/callback`
+   - **Front-channel logout URL**: (leave empty)
+3. **API Permissions** → Add **Delegated permissions**:
    - `Notes.ReadWrite` - Read and write user OneNote notebooks
    - `User.Read` - Sign in and read user profile
-3. **No admin consent required!** ✅
+4. **No admin consent required!** ✅
 
 ### 2. Configuration
 
@@ -42,18 +45,19 @@ The server will prompt for user authentication:
 ```
 🔐 USER AUTHENTICATION REQUIRED
 ================================
-Please visit: https://microsoft.com/devicelogin
-Enter code: ABC123DEF
-================================
+Opening browser for Microsoft sign-in...
+🌐 Local auth server started at http://localhost:3001
+🌐 Opening browser to: https://login.microsoftonline.com/...
 ⏳ Waiting for you to complete sign-in in your browser...
 ```
 
 ## 🔐 Authentication Flow
 
-1. **First Run**: Device code flow prompts user to sign in
+1. **First Run**: Local web server + browser authentication
 2. **Subsequent Runs**: Token cached automatically 
 3. **Token Refresh**: Handled automatically when expired
 4. **User Context**: All API calls use `/me` endpoints (signed-in user)
+5. **Enterprise-Friendly**: No device code flow - works with corporate restrictions
 
 ## ✅ Advantages
 

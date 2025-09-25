@@ -3,9 +3,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@microsoft/microsoft-graph-client';
-import { PublicClientApplication, AuthenticationResult } from '@azure/msal-node';
+import { ConfidentialClientApplication, AuthenticationResult } from '@azure/msal-node';
 import { z } from 'zod';
 import { spawn } from 'child_process';
+import * as http from 'http';
+import * as url from 'url';
+import * as crypto from 'crypto';
 
 // Create MCP server
 const mcpServer = new McpServer({
@@ -24,15 +27,20 @@ if (!tenantId || !clientId) {
 console.log('🔧 OneNote MCP Server (Delegated Auth) starting...');
 console.log('📝 This version uses delegated permissions with user sign-in');
 
-// MSAL configuration for delegated permissions
+// Configuration for local web server auth
+const PORT = 3001;
+const REDIRECT_URI = `http://localhost:${PORT}/auth/callback`;
+
+// MSAL configuration for authorization code flow
 const msalConfig = {
   auth: {
     clientId: clientId,
     authority: `https://login.microsoftonline.com/${tenantId}`,
+    clientSecret: process.env.AZURE_CLIENT_SECRET || 'not-needed-for-public-client',
   },
 };
 
-const pca = new PublicClientApplication(msalConfig);
+const cca = new ConfidentialClientApplication(msalConfig);
 
 // Token storage
 let cachedTokenResponse: AuthenticationResult | null = null;
@@ -42,6 +50,64 @@ const graphScopes = [
   'https://graph.microsoft.com/Notes.ReadWrite',
   'https://graph.microsoft.com/User.Read',
 ];
+
+// Helper function to start local web server for OAuth callback
+function startAuthServer(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const parsedUrl = url.parse(req.url || '', true);
+      
+      if (parsedUrl.pathname === '/auth/callback') {
+        const authCode = parsedUrl.query.code as string;
+        const error = parsedUrl.query.error as string;
+        
+        if (error) {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <body style="font-family: Arial; padding: 50px; text-align: center;">
+                <h1>❌ Authentication Failed</h1>
+                <p>Error: ${error}</p>
+                <p>You can close this window and try again.</p>
+              </body>
+            </html>
+          `);
+          server.close();
+          reject(new Error(`Authentication failed: ${error}`));
+          return;
+        }
+        
+        if (authCode) {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <body style="font-family: Arial; padding: 50px; text-align: center;">
+                <h1>✅ Authentication Successful!</h1>
+                <p>You can close this window and return to your application.</p>
+                <script>setTimeout(() => window.close(), 3000);</script>
+              </body>
+            </html>
+          `);
+          server.close();
+          resolve(authCode);
+          return;
+        }
+      }
+      
+      // Handle other requests
+      res.writeHead(404);
+      res.end('Not found');
+    });
+    
+    server.listen(PORT, 'localhost', () => {
+      console.log(`🌐 Local auth server started at http://localhost:${PORT}`);
+    });
+    
+    server.on('error', (err) => {
+      reject(new Error(`Failed to start local server: ${err.message}`));
+    });
+  });
+}
 
 // Authentication helper functions
 async function getAccessToken(): Promise<string> {
@@ -54,7 +120,7 @@ async function getAccessToken(): Promise<string> {
       };
       
       try {
-        const silentResult = await pca.acquireTokenSilent(silentRequest);
+        const silentResult = await cca.acquireTokenSilent(silentRequest);
         console.log('🔄 Using cached authentication token');
         return silentResult.accessToken;
       } catch (silentError) {
@@ -62,41 +128,61 @@ async function getAccessToken(): Promise<string> {
       }
     }
 
-    // If silent acquisition fails, use device code flow
+    // Use authorization code flow with local web server
     console.log('\n🔐 USER AUTHENTICATION REQUIRED');
     console.log('================================');
+    console.log('Opening browser for Microsoft sign-in...');
+    console.log('================================');
     
-    const deviceCodeRequest = {
+    // Generate state for security
+    const state = crypto.randomBytes(32).toString('hex');
+    
+    // Build authorization URL
+    const authCodeUrlParameters = {
       scopes: graphScopes,
-      deviceCodeCallback: (response: any) => {
-        console.log(`Please visit: ${response.verificationUri}`);
-        console.log(`Enter code: ${response.userCode}`);
-        console.log('================================');
-        console.log('⏳ Waiting for you to complete sign-in in your browser...\n');
-
-        // Try to open browser automatically
-        const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-        try {
-          spawn(opener, [response.verificationUri], { stdio: 'ignore', detached: true }).unref();
-        } catch (error) {
-          // Ignore browser opening errors - user can manually open the URL
-        }
-      },
+      redirectUri: REDIRECT_URI,
+      state: state,
     };
 
-    const deviceCodeResult = await pca.acquireTokenByDeviceCode(deviceCodeRequest);
+    const authUrl = await cca.getAuthCodeUrl(authCodeUrlParameters);
     
-    if (!deviceCodeResult) {
-      throw new Error('Failed to acquire token via device code flow');
+    // Start local server to receive callback
+    const authCodePromise = startAuthServer();
+    
+    // Open browser
+    console.log(`🌐 Opening browser to: ${authUrl}`);
+    const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    try {
+      spawn(opener, [authUrl], { stdio: 'ignore', detached: true }).unref();
+    } catch (error) {
+      console.log(`⚠️  Could not open browser automatically. Please visit: ${authUrl}`);
     }
     
-    cachedTokenResponse = deviceCodeResult;
+    console.log('⏳ Waiting for you to complete sign-in in your browser...\n');
+    
+    // Wait for auth code from callback
+    const authCode = await authCodePromise;
+    
+    // Exchange authorization code for token
+    const tokenRequest = {
+      code: authCode,
+      scopes: graphScopes,
+      redirectUri: REDIRECT_URI,
+    };
+
+    const authResult = await cca.acquireTokenByCode(tokenRequest);
+    
+    if (!authResult) {
+      throw new Error('Failed to acquire token via authorization code flow');
+    }
+    
+    cachedTokenResponse = authResult;
     
     console.log('✅ Authentication successful!');
-    console.log(`👤 Signed in as: ${deviceCodeResult.account?.name || deviceCodeResult.account?.username}`);
+    console.log(`👤 Signed in as: ${authResult.account?.name || authResult.account?.username}`);
     console.log('🎯 OneNote MCP Server is ready!\n');
     
-    return deviceCodeResult.accessToken;
+    return authResult.accessToken;
   } catch (error) {
     throw new Error(`Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }

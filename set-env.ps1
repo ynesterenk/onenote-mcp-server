@@ -7,17 +7,19 @@ Write-Host "Setting Azure environment variables..." -ForegroundColor Green
 if (Test-Path "secret.local") {
     Write-Host "Loading secrets from secret.local file..." -ForegroundColor Cyan
     
-    # Read the secret.local file and parse KEY=VALUE pairs
+    # Read the secret.local file and parse KEY=VALUE or KEY: VALUE pairs
     $secretLines = Get-Content "secret.local" | Where-Object { $_ -notmatch "^#" -and $_ -ne "" }
     
     foreach ($line in $secretLines) {
-        if ($line -match "^(.+?)=(.+)$") {
+        # Support both KEY=VALUE and KEY: VALUE formats
+        if ($line -match "^(.+?)[:=]\s*(.+)$") {
             $key = $matches[1].Trim()
             $value = $matches[2].Trim()
             
             switch ($key) {
                 "AZURE_TENANT_ID" { $env:AZURE_TENANT_ID = $value }
                 "AZURE_CLIENT_ID" { $env:AZURE_CLIENT_ID = $value }
+                # Note: Still parsing AZURE_CLIENT_SECRET for backward compatibility
                 "AZURE_CLIENT_SECRET" { $env:AZURE_CLIENT_SECRET = $value }
             }
         }
