@@ -9,21 +9,57 @@ import { spawn } from 'child_process';
 import * as http from 'http';
 import * as url from 'url';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Setup logging
+const LOG_FILE = path.join(__dirname, '..', 'mcp-server.log');
+
+function log(message: string) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `${timestamp}: ${message}\n`;
+  
+  // Append to log file
+  try {
+    fs.appendFileSync(LOG_FILE, logMessage);
+  } catch (error) {
+    // Ignore logging errors
+  }
+  
+  // Also log to console if not in Cursor's STDIO mode
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(message);
+  }
+}
+
+// Start logging
+log('=== OneNote MCP Server (Delegated Auth) Starting ===');
+log(`Process ID: ${process.pid}`);
+log(`Working directory: ${process.cwd()}`);
+log(`Log file: ${LOG_FILE}`);
 
 // Create MCP server
+log('Creating MCP server...');
 const mcpServer = new McpServer({
   name: 'mcp-server-onenote-delegated',
   version: '0.1.1',
 });
+log('MCP server created successfully');
 
 // Initialize Azure app configuration
+log('Reading environment variables...');
     const tenantId = process.env.AZURE_TENANT_ID;
     const clientId = process.env.AZURE_CLIENT_ID;
 
+log(`AZURE_TENANT_ID: ${tenantId ? 'SET' : 'NOT SET'}`);
+log(`AZURE_CLIENT_ID: ${clientId ? 'SET' : 'NOT SET'}`);
+
 if (!tenantId || !clientId) {
+  log('ERROR: Missing required environment variables');
   throw new Error('AZURE_TENANT_ID and AZURE_CLIENT_ID must be provided via environment variables');
 }
 
+log('Environment variables validated successfully');
 console.log('🔧 OneNote MCP Server (Delegated Auth) starting...');
 console.log('📝 This version uses delegated permissions with user sign-in');
 
@@ -32,6 +68,7 @@ const PORT = 3001;
 const REDIRECT_URI = `http://localhost:${PORT}/auth/callback`;
 
 // MSAL configuration for authorization code flow
+log('Configuring MSAL...');
 const msalConfig = {
   auth: {
     clientId: clientId,
@@ -40,7 +77,17 @@ const msalConfig = {
   },
 };
 
-const cca = new ConfidentialClientApplication(msalConfig);
+log(`MSAL Authority: ${msalConfig.auth.authority}`);
+log('Creating ConfidentialClientApplication...');
+
+let cca: ConfidentialClientApplication;
+try {
+  cca = new ConfidentialClientApplication(msalConfig);
+  log('MSAL client created successfully');
+} catch (error) {
+  log(`ERROR creating MSAL client: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  throw error;
+}
 
 // Token storage
 let cachedTokenResponse: AuthenticationResult | null = null;
@@ -111,80 +158,37 @@ function startAuthServer(): Promise<string> {
 
 // Authentication helper functions
 async function getAccessToken(): Promise<string> {
+  log('=== getAccessToken called ===');
+  
   try {
-    // Try to get token silently first (from cache)
-    if (cachedTokenResponse?.account) {
-      const silentRequest = {
-        account: cachedTokenResponse.account,
-        scopes: graphScopes,
-      };
+    // Try to read pre-saved token from file
+    const TOKEN_FILE = path.join(__dirname, '..', '.auth-token');
+    log(`Looking for token file: ${TOKEN_FILE}`);
+    
+    if (fs.existsSync(TOKEN_FILE)) {
+      log('Token file found, reading...');
+      const tokenData = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
       
-      try {
-        const silentResult = await cca.acquireTokenSilent(silentRequest);
-        console.log('🔄 Using cached authentication token');
-        return silentResult.accessToken;
-      } catch (silentError) {
-        console.log('🔄 Cached token expired, requesting new authentication...');
+      const expiresOn = new Date(tokenData.expiresOn);
+      const now = new Date();
+      
+      log(`Token expires: ${expiresOn}`);
+      log(`Current time: ${now}`);
+      
+      if (expiresOn > now) {
+        log('Using valid pre-saved token');
+        return tokenData.accessToken;
+      } else {
+        log('Pre-saved token has expired');
+        throw new Error('Authentication token has expired. Please run: node auth-tool.js');
       }
+    } else {
+      log('No token file found');
+      throw new Error('No authentication token found. Please run: node auth-tool.js');
     }
-
-    // Use authorization code flow with local web server
-    console.log('\n🔐 USER AUTHENTICATION REQUIRED');
-    console.log('================================');
-    console.log('Opening browser for Microsoft sign-in...');
-    console.log('================================');
-    
-    // Generate state for security
-    const state = crypto.randomBytes(32).toString('hex');
-    
-    // Build authorization URL
-    const authCodeUrlParameters = {
-      scopes: graphScopes,
-      redirectUri: REDIRECT_URI,
-      state: state,
-    };
-
-    const authUrl = await cca.getAuthCodeUrl(authCodeUrlParameters);
-    
-    // Start local server to receive callback
-    const authCodePromise = startAuthServer();
-    
-    // Open browser
-    console.log(`🌐 Opening browser to: ${authUrl}`);
-    const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    try {
-      spawn(opener, [authUrl], { stdio: 'ignore', detached: true }).unref();
-    } catch (error) {
-      console.log(`⚠️  Could not open browser automatically. Please visit: ${authUrl}`);
-    }
-    
-    console.log('⏳ Waiting for you to complete sign-in in your browser...\n');
-    
-    // Wait for auth code from callback
-    const authCode = await authCodePromise;
-    
-    // Exchange authorization code for token
-    const tokenRequest = {
-      code: authCode,
-      scopes: graphScopes,
-      redirectUri: REDIRECT_URI,
-    };
-
-    const authResult = await cca.acquireTokenByCode(tokenRequest);
-    
-    if (!authResult) {
-      throw new Error('Failed to acquire token via authorization code flow');
-    }
-    
-    cachedTokenResponse = authResult;
-    
-    console.log('✅ Authentication successful!');
-    console.log(`👤 Signed in as: ${authResult.account?.name || authResult.account?.username}`);
-    console.log('🎯 OneNote MCP Server is ready!\n');
-    
-    return authResult.accessToken;
   } catch (error) {
-    throw new Error(`Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log(`ERROR in getAccessToken: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new Error(`Authentication required: ${error instanceof Error ? error.message : 'Unknown error'}. Please run: node auth-tool.js`);
   }
 }
 
@@ -202,7 +206,9 @@ mcpServer.registerTool('list_notebooks', {
   description: 'List all OneNote notebooks for the authenticated user',
   inputSchema: {},
 }, async () => {
+  log('=== list_notebooks tool called ===');
   try {
+    log('Making Graph API call to /me/onenote/notebooks...');
     const response = await graphClient.api('/me/onenote/notebooks').get();
     return {
       content: [
@@ -389,14 +395,34 @@ mcpServer.registerTool('create_page', {
 
 // Start server if run directly
 async function main() {
-  const transport = new StdioServerTransport();
-  await mcpServer.connect(transport);
-  console.log('🚀 OneNote MCP Server (Delegated Auth) is running...');
+  log('Starting main server function...');
+  
+  try {
+    log('Creating STDIO transport...');
+    const transport = new StdioServerTransport();
+    log('Transport created, connecting to MCP server...');
+    
+    await mcpServer.connect(transport);
+    log('MCP server connected successfully');
+    
+    console.log('🚀 OneNote MCP Server (Delegated Auth) is running...');
+    log('Server is running and ready for requests');
+    
+  } catch (error) {
+    log(`ERROR in main function: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log(`Stack trace: ${error instanceof Error ? error.stack : 'No stack trace'}`);
+    throw error;
+  }
 }
 
 if (require.main === module) {
+  log('Starting server as main module...');
   main().catch((error) => {
+    log(`FATAL ERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    log(`Stack trace: ${error instanceof Error ? error.stack : 'No stack trace'}`);
     console.error('❌ Server error:', error);
     process.exit(1);
   });
+} else {
+  log('Module loaded as dependency, not starting server');
 }

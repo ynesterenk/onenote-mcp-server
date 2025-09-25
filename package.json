@@ -14,6 +14,7 @@
     "start:dev": "npm run build && npm run start",
     "env:set": "powershell -ExecutionPolicy Bypass -File ./set-env.ps1",
     "env:set-bash": "bash -c 'source ./set-env.sh'",
+    "auth": "node auth-tool.js",
     "dev": "powershell -ExecutionPolicy Bypass -File ./set-env-and-run.ps1",
     "test": "jest --coverage",
     "lint": "eslint . --ext .ts",
