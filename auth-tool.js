@@ -129,12 +129,15 @@ async function authenticate() {
     
     try {
       if (process.platform === 'win32') {
-        spawn('cmd', ['/c', 'start', authUrl], { stdio: 'ignore', detached: true }).unref();
+        // On Windows, we need to properly escape the URL
+        // Use start with quotes to handle special characters properly
+        spawn('cmd', ['/c', 'start', '""', `"${authUrl}"`], { stdio: 'ignore', detached: true }).unref();
       } else if (process.platform === 'darwin') {
         spawn('open', [authUrl], { stdio: 'ignore', detached: true }).unref();
       } else {
         spawn('xdg-open', [authUrl], { stdio: 'ignore', detached: true }).unref();
       }
+      console.log('🌐 Browser opened successfully');
     } catch (error) {
       console.log(`⚠️  Could not open browser automatically. Please visit: ${authUrl}`);
     }

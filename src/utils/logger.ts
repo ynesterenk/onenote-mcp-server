@@ -62,3 +62,9 @@ export class Logger {
     this.log(LogLevel.ERROR, message, meta);
   }
 }
+
+// Simple log function for backward compatibility
+export function log(message: string): void {
+  const logger = Logger.getInstance();
+  logger.info(message);
+}
