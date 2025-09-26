@@ -14,12 +14,32 @@ export function registerPageTools(mcpServer: McpServer, graphClient: Client): vo
   }, async ({ sectionId }) => {
     log(`=== list_pages tool called for section: ${sectionId} ===`);
     try {
-      const response = await graphClient.api(`/me/onenote/sections/${sectionId}/pages`).get();
+      let allPages = [];
+      let nextLink = `/me/onenote/sections/${sectionId}/pages`;
+      
+      // Handle pagination - keep fetching until no more pages
+      while (nextLink) {
+        const response = await graphClient.api(nextLink).get();
+        allPages.push(...response.value);
+        
+        // Check for next page link
+        nextLink = response['@odata.nextLink'] ? 
+          response['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '') : 
+          null;
+        
+        log(`Fetched ${response.value.length} pages, total so far: ${allPages.length}`);
+        if (nextLink) {
+          log(`More pages available, fetching next batch...`);
+        }
+      }
+      
+      log(`Completed list_pages for section ${sectionId}. Total pages: ${allPages.length}`);
+      
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response.value, null, 2),
+            text: JSON.stringify(allPages, null, 2),
           },
         ],
       };

@@ -15,7 +15,10 @@ export class TokenManager {
   constructor(tenantId: string, clientId: string) {
     log('Initializing TokenManager...');
     
-    this.TOKEN_FILE = path.join(process.cwd(), '.auth-token');
+    // Use __dirname to get the directory where this file is located, then go up to project root
+    const projectRoot = path.resolve(__dirname, '..', '..');
+    this.TOKEN_FILE = path.join(projectRoot, '.auth-token');
+    log(`Token file path: ${this.TOKEN_FILE}`);
     
     const msalConfig = {
       auth: {

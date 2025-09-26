@@ -8,6 +8,7 @@ import { registerNotebookTools } from './tools/notebooks';
 import { registerSectionTools } from './tools/sections';
 import { registerPageTools } from './tools/pages';
 import { registerSearchTools } from './tools/search';
+import { registerSummarizationTools } from './tools/summarization';
 import { log } from './utils/logger';
 
 // Start logging
@@ -50,6 +51,7 @@ registerNotebookTools(mcpServer, graphClient);
 registerSectionTools(mcpServer, graphClient);
 registerPageTools(mcpServer, graphClient);
 registerSearchTools(mcpServer, graphClient);
+registerSummarizationTools(mcpServer, graphClient);
 log('All tools registered successfully');
 
 // Start server if run directly
